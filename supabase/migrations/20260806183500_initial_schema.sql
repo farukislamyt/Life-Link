@@ -5,10 +5,9 @@
 -- 4. Create bucket-specific storage policies for: avatars, blood-request-images, hospital-images, reports.
 -- 5. Add missing CHECK constraints: phone, latitude, longitude, patient_age, total_donations.
 -- 6. Make donation eligibility configurable (default 120 days) instead of hardcoded 56 days.
--- 7. Validate the migration with: supabase db lint, supabase db push --dry-run.
 
 -- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Official Supabase storage bucket creation
 insert into storage.buckets (id, name)
@@ -27,16 +26,6 @@ insert into storage.buckets (id, name)
 values ('reports', 'reports')
 on conflict (id) do nothing;
 
--- Storage bucket policies (basic authenticated access)
-CREATE STORAGE POLICY IF NOT EXISTS avatars_policy ON bucket avatars FOR SELECT USING (auth.uid() IS NOT NULL);
-CREATE STORAGE POLICY IF NOT EXISTS avatars_policy ON bucket avatars FOR INSERT USING (auth.uid() IS NOT NULL);
-CREATE STORAGE POLICY IF NOT EXISTS blood_req_images_policy ON bucket "blood-request-images" FOR SELECT USING (auth.uid() IS NOT NULL);
-CREATE STORAGE POLICY IF NOT EXISTS blood_req_images_policy ON bucket "blood-request-images" FOR INSERT USING (auth.uid() IS NOT NULL);
-CREATE STORAGE POLICY IF NOT EXISTS hospital_images_policy ON bucket "hospital-images" FOR SELECT USING (auth.uid() IS NOT NULL);
-CREATE STORAGE POLICY IF NOT EXISTS hospital_images_policy ON bucket "hospital-images" FOR INSERT USING (auth.uid() IS NOT NULL);
-CREATE STORAGE POLICY IF NOT EXISTS reports_policy ON bucket reports FOR SELECT USING (auth.uid() IS NOT NULL);
-CREATE STORAGE POLICY IF NOT EXISTS reports_policy ON bucket reports FOR INSERT USING (auth.uid() IS NOT NULL);
-
 -- Enumerated type for blood groups
 CREATE TYPE public.blood_type AS ENUM ('A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-');
 
@@ -54,7 +43,7 @@ INSERT INTO public.config (key, value) VALUES ('donation_eligibility_days', '120
 CREATE TABLE public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   full_name TEXT,
-  phone TEXT NOT NULL,
+  phone TEXT NULL,
   division TEXT,
   district TEXT,
   gender TEXT,
@@ -63,30 +52,40 @@ CREATE TABLE public.profiles (
   last_donation_date TIMESTAMPTZ,
   avatar_url TEXT,
   is_available BOOLEAN NOT NULL DEFAULT TRUE,
-  total_donations NUMERIC NOT NULL DEFAULT 0,
+  total_donations INTEGER NOT NULL DEFAULT 0,
   is_admin BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
-  CONSTRAINT phone_bn_check CHECK (phone ~ '^\\+8801[0-9]{9}$')
+  CONSTRAINT phone_bn_check
+CHECK (
+  phone IS NULL
+ OR phone ~ '^\+8801[0-9]{9}$')
 );
 
 -- Function to auto‑create a profile for a new Auth user (phone placeholder satisfies CHECK)
 CREATE OR REPLACE FUNCTION public.create_profile()
-RETURNS TRIGGER AS $$
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $function$
 BEGIN
   INSERT INTO public.profiles (
-    id, full_name, phone, is_admin, created_at, updated_at
+    id,
+    full_name,
+    is_admin,
+    created_at,
+    updated_at
   ) VALUES (
     NEW.id,
     COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
-    '+8801000000000',
     FALSE,
     now(),
     now()
   );
+
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$function$;
 
 -- Trigger on auth.users to fire after a row is inserted
 CREATE TRIGGER trigger_create_profile
@@ -95,7 +94,7 @@ FOR EACH ROW EXECUTE FUNCTION public.create_profile();
 
 -- Hospitals table with required columns
 CREATE TABLE public.hospitals (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   address TEXT,
   latitude NUMERIC,
@@ -115,7 +114,7 @@ CREATE TABLE public.hospitals (
 
 -- Blood Requests table with all required columns
 CREATE TABLE public.blood_requests (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   requester_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   hospital_id UUID REFERENCES public.hospitals(id) ON DELETE SET NULL,
   blood_type public.blood_type NOT NULL,
@@ -139,7 +138,7 @@ CREATE TABLE public.blood_requests (
 
 -- Donors table (extended for eligibility and searching)
 CREATE TABLE public.donors (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   profile_id UUID NOT NULL UNIQUE REFERENCES public.profiles(id) ON DELETE CASCADE,
   is_available BOOLEAN NOT NULL DEFAULT TRUE,
   last_donation_date TIMESTAMPTZ,
@@ -150,7 +149,7 @@ CREATE TABLE public.donors (
 
 -- Donations table (extended)
 CREATE TABLE public.donations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   donor_id UUID NOT NULL REFERENCES public.donors(id) ON DELETE CASCADE,
   request_id UUID NOT NULL REFERENCES public.blood_requests(id) ON DELETE CASCADE,
   donation_date TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -165,7 +164,7 @@ CREATE TABLE public.donations (
 
 -- Notifications table (extended)
 CREATE TABLE public.notifications (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   recipient_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   type TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -178,7 +177,7 @@ CREATE TABLE public.notifications (
 
 -- Reports table (extended)
 CREATE TABLE public.reports (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   generated_by UUID NOT NULL REFERENCES public.profiles(id) ON DELETE SET NULL,
   target_user_id UUID REFERENCES public.profiles(id),
   report_type TEXT NOT NULL,
