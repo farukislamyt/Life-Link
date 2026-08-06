@@ -11,10 +11,21 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Official Supabase storage bucket creation
-CREATE STORAGE BUCKET IF NOT EXISTS avatars;
-CREATE STORAGE BUCKET IF NOT EXISTS "blood-request-images";
-CREATE STORAGE BUCKET IF NOT EXISTS "hospital-images";
-CREATE STORAGE BUCKET IF NOT EXISTS reports;
+insert into storage.buckets (id, name)
+values ('avatars', 'avatars')
+on conflict (id) do nothing;
+
+insert into storage.buckets (id, name)
+values ('blood-request-images', 'blood-request-images')
+on conflict (id) do nothing;
+
+insert into storage.buckets (id, name)
+values ('hospital-images', 'hospital-images')
+on conflict (id) do nothing;
+
+insert into storage.buckets (id, name)
+values ('reports', 'reports')
+on conflict (id) do nothing;
 
 -- Storage bucket policies (basic authenticated access)
 CREATE STORAGE POLICY IF NOT EXISTS avatars_policy ON bucket avatars FOR SELECT USING (auth.uid() IS NOT NULL);
